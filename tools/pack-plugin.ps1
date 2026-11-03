@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][string]$ProjectDir,
     [string]$Configuration = "Debug",
     [string]$OutputDir = "dist"
@@ -12,7 +12,8 @@ if (-not (Test-Path $manifestPath)) {
     throw "缺少 plugin.json：$manifestPath"
 }
 
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+# 显式按 UTF-8 读：Windows PowerShell 5.1 在无 BOM 时用 ANSI 解码，中文名/描述会让 ConvertFrom-Json 直接失败
+$manifest = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not $manifest.id -or -not $manifest.entry_dll) {
     throw "plugin.json 必须包含 id 与 entry_dll"
 }

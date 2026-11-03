@@ -1,0 +1,25 @@
+{
+    "id":  "ai-balance",
+    "name":  "AI 余额",
+    "version":  "1.0.0",
+    "description":  "小岛显示各家 AI 服务的账户余额（DeepSeek、魔搭魔粒，可继续加任意官方供应商），并靠本地采样算出今日 / 本周消耗。点岛体弹出大卡片看余额明细与消耗，密钥用 Windows DPAPI 加密存在插件目录。",
+    "author":  "shiftyuh",
+    "icon_glyph":  "",
+    "homepage":  "https://github.com/shiftyuh/WinLand",
+    "license":  "MIT",
+    "tags":  [
+                 "ai",
+                 "balance",
+                 "billing",
+                 "usage"
+             ],
+    "api_version":  2,
+    "min_host_version":  "2.3.0",
+    "package":  "plugins/ai-balance/ai-balance.lwp",
+    "package_size":  38648,
+    "sha256":  "23fa0ab3b43d7f63c8ba558c32b6941ceb6b6787c545495605b699d0f573f45b",
+    "readme":  "plugins/ai-balance/README.md",
+    "logo":  "plugins/ai-balance/logo.png",
+    "updated_at":  null,
+    "logo_data":  "\u003c128x128 PNG 的 data URI，由 CI 生成\u003e"
+}

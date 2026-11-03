@@ -108,6 +108,16 @@ public sealed partial class IslandWindow : Window
     private const int TapSuppressMs = 400;
     /// <summary>翻页位记住的那张卡（插件 id）：纯界面状态，只用于「下次展开还看这张」。</summary>
     private const string QueueTailKey = "island.queueTail";
+    /// <summary>滚轮切换总开关（默认开）：光标在岛上滚一下就把主岛/小岛换成下一张活动。</summary>
+    private const string WheelSwitchKey = "island.wheelSwitch";
+    /// <summary>滚轮方向反转（默认关）：默认向下滚 = 下一张。</summary>
+    private const string WheelInvertKey = "island.wheelInvert";
+    /// <summary>滚轮一格的增量（Windows 标准值）。触摸板/高精度滚轮按这个值折算成「几格」。</summary>
+    private const int WheelNotchDelta = 120;
+    /// <summary>两次轮播之间的最小间隔：每次轮播要走一遍内容交接动画，连滚时按节拍排队而不是硬切。</summary>
+    private const int WheelStepIntervalMs = 200;
+    /// <summary>排队上限（格）：疯狂滚动时最多攒这么多步，滚完还能接着翻，但不会积压一大串动画。</summary>
+    private const int WheelMaxPending = 3;
     /// <summary>岛体圆角比例（百分比，100 = 风格默认）。</summary>
     private const string RadiusKey = "island.radius";
     /// <summary>岛体不透明度（百分比，10..100）。</summary>
@@ -217,6 +227,18 @@ public sealed partial class IslandWindow : Window
     private IslandSurface? _pageOutgoing;
     private Storyboard? _pageAnim;
     private int _pageAnimVersion;
+    /// <summary>
+    /// 滚轮轮播锚点：上一次滚到的那张活动（插件 id）。非空时 <see cref="SortLive"/> 会把它
+    /// 旋到两张排序表的最前面，因此小岛常驻与展开主卡一起跟着走。
+    /// 纯界面状态、不落盘：重启后回到优先级决定的那张。插件不在了就自动作废（见 ApplyCarouselRotation）。
+    /// </summary>
+    private string? _carouselOwner;
+    /// <summary>待执行的轮播方向（+1 = 下一张，-1 = 上一张，0 = 没有）；由看门狗按节拍消费。</summary>
+    private int _wheelPending;
+    /// <summary>上一次真正执行轮播的时刻（<see cref="WheelStepIntervalMs"/> 节拍用）。</summary>
+    private long _lastWheelStepTicks;
+    /// <summary>滚轮钩子当前是否装着（只在状态变化时打日志，避免每次都刷）。</summary>
+    private bool _wheelWatcherInstalled;
     private readonly Ellipse _idleDot;
     private IslandStyleKind _style = IslandStyleKind.Apple;
     private IslandMaterialKind _material = IslandMaterialKind.Acrylic;
@@ -459,6 +481,7 @@ public sealed partial class IslandWindow : Window
             _hoverIntent.Stop();
             _dropScroll.Stop();
             _dropExitGrace.Stop();
+            Win32.UninstallMouseWheelWatcher();   // 关窗后钩子不能留着
             _backdrop?.Dispose();
         };
 
@@ -557,6 +580,7 @@ public sealed partial class IslandWindow : Window
         ApplyDropSetting();
         ApplyScaleSettings();
         UpdateVisibility();
+        UpdateWheelWatcher();   // 开关变化时立即可用/立即卸掉（可见性没变时 UpdateVisibility 会早退）
         EnsureCanvas();
         ApplyCanvasBounds();
         UpdateFullscreenState(force: true);
@@ -728,7 +752,7 @@ public sealed partial class IslandWindow : Window
     /// </summary>
     private void ApplyStyle()
     {
-        var style = IslandStyle.ParseStyle(_settings.Get(IslandStyle.StyleKey, IslandStyle.AppleValue));
+        var style = IslandStyle.ParseStyle(_settings.Get(IslandStyle.StyleKey, IslandStyle.DefaultStyleValue));
         var material = IslandStyle.ParseMaterial(_settings.Get(IslandStyle.MaterialKey, IslandStyle.AcrylicValue));
         _systemLight = SystemTheme.IsLight;
         bool light = IslandStyle.IsLightChrome(style, _systemLight);
@@ -794,12 +818,14 @@ public sealed partial class IslandWindow : Window
     }
 
     /// <summary>
-    /// 窗口级材质。Fluent 用控制器直接挂 Desktop Acrylic / Mica（并告诉它当前是深色还是浅色主题）——
-    /// 岛体与队列卡片都在窗口形状内，材质因此只出现在岛屿轮廓里。Apple 保持原来的透明画布背景（材质让位）。
+    /// 窗口级材质。Fluent / 玻璃用控制器直接挂 Desktop Acrylic（并告诉它当前是深色还是浅色主题）——
+    /// 岛体与队列卡片都在窗口形状内，材质因此只出现在岛屿轮廓里。
+    /// 玻璃固定用 Acrylic（它的身份就是"透出背后的模糊"），并给控制器调色（见 IslandBackdrop）；
+    /// 哑光 Apple 保持原来的透明画布背景（材质让位）。
     /// </summary>
     private void ApplyBackdrop()
     {
-        if (_style != IslandStyleKind.Fluent)
+        if (!IslandStyle.UsesBackdrop(_style))
         {
             _materialApplied = false;
             if (_backdropOwned)
@@ -819,16 +845,18 @@ public sealed partial class IslandWindow : Window
             _backdropOwned = true;
         }
 
-        if (_backdrop.TryApply(_material, _light))
+        // 玻璃不认 island.material（它要的就是 Acrylic 的通透模糊）
+        var material = _style == IslandStyleKind.AppleGlass ? IslandMaterialKind.Acrylic : _material;
+        if (_backdrop.TryApply(material, _light, _style))
         {
             _materialApplied = true;
             return;
         }
 
-        if (_warnedMaterial != _material)
+        if (_warnedMaterial != material)
         {
-            _warnedMaterial = _material;
-            _log.Warn($"当前系统不支持 {_material.ToValue()} 材质，已回退为纯色底衬。");
+            _warnedMaterial = material;
+            _log.Warn($"当前系统不支持 {material.ToValue()} 材质，已回退为纯色底衬。");
         }
 
         _backdrop.Clear();
@@ -963,6 +991,38 @@ public sealed partial class IslandWindow : Window
 
         _expandedOrder.Clear();
         _expandedOrder.AddRange(snapshot.OrderByDescending(t => ExpandedPriority(t.Owner, t.Content)));
+
+        ApplyCarouselRotation();
+    }
+
+    /// <summary>
+    /// 把滚轮轮到的活动旋到两张排序表的最前面（小岛常驻取 <c>_live[0]</c>、展开主卡取
+    /// <c>_expandedOrder[0]</c>，所以一次旋转两处同时生效）。锚点已经不在活动集合里
+    /// （插件被卸载/停用）就作废，交回优先级默认值 —— 不然滚轮会「卡死」在已消失的那张上。
+    /// 只调整顺序、不改集合成员，因此画布预留、栈宽、卡片高度的计算全都不受影响。
+    /// </summary>
+    private void ApplyCarouselRotation()
+    {
+        if (_carouselOwner == null) return;
+
+        int index = _live.FindIndex(t => t.Owner == _carouselOwner);
+        if (index < 0)
+        {
+            _carouselOwner = null;
+            return;
+        }
+
+        RotateToFront(_live, index);
+        RotateToFront(_expandedOrder, _expandedOrder.FindIndex(t => t.Owner == _carouselOwner));
+    }
+
+    /// <summary>把 <paramref name="index"/> 起的元素整体搬到表头（<paramref name="index"/> &lt;= 0 时不动）。</summary>
+    private static void RotateToFront(List<(string Owner, IslandLiveContent Content)> list, int index)
+    {
+        if (index <= 0 || index >= list.Count) return;
+        var head = list.GetRange(0, index);
+        list.RemoveRange(0, index);
+        list.AddRange(head);
     }
 
     /// <summary>原优先级：宿主设置 <c>plugin.&lt;id&gt;.priority</c> 覆盖插件自己声明的 <c>Priority</c>（既有行为）。</summary>
@@ -1060,6 +1120,12 @@ public sealed partial class IslandWindow : Window
 
         if (live.MorphView != null)
         {
+            // 目标视图此刻可能还挂在队列卡片里（展开态换主卡：改优先级 / 滚轮轮播）。
+            // 先把队列拆掉（TeardownQueue 会把卡片 ContentPresenter 置空、断开父子关系），
+            // 否则把「已有父级的元素」塞进 ContentPresenter 会抛 ArgumentException，
+            // 而这个异常跑在定时器/钩子回调里就是致命的 stowed exception（直接杀进程）。
+            if (wantExpand) TeardownQueue();
+
             // 确保 View 在 ContentHost 里（同一棵树内换位时交接会自动跳过动画）
             if (tempCard) SwapContentForTempCard(live.MorphView.View);
             else SwapContent(live.MorphView.View, animate: true);
@@ -1087,6 +1153,8 @@ public sealed partial class IslandWindow : Window
             if (wantExpand && live.ExpandedContent != null)
             {
                 _expanded = true;
+                // 同上：双视图的展开内容也可能还挂在队列卡片里
+                TeardownQueue();
                 if (tempCard) SwapContentForTempCard(live.ExpandedContent);
                 else SwapContent(live.ExpandedContent, animate: true);
                 AnimateIslandSize(ExpandedMainSize(), ExpandDuration);
@@ -2378,6 +2446,9 @@ public sealed partial class IslandWindow : Window
     /// </summary>
     private void WatchdogTick()
     {
+        // 滚轮积压按节拍消费：滚轮事件在钩子线程上只记账，真正的内容切换排在心跳里做
+        PumpWheelStep();
+
         UpdateFullscreenState();
         HealTopmost();
 
@@ -2577,9 +2648,9 @@ public sealed partial class IslandWindow : Window
     /// </summary>
     private ShapeRect GrowShape(ShapeRect r, double scale)
     {
-        // Fluent + 系统材质：外扩圈里会露出未压纱的材质（一圈浅边），所以只留 1 物理像素；
+        // 有系统材质的风格（Fluent / 玻璃）：外扩圈里会露出未压纱的材质（一圈浅边），所以只留 1 物理像素；
         // 其余情况外扩圈是透明的，保持 2 物理像素以保住抗锯齿。
-        int min = _style == IslandStyleKind.Fluent && _materialApplied ? 1 : 2;
+        int min = _style != IslandStyleKind.Apple && _materialApplied ? 1 : 2;
         int slack = Math.Max(min, (int)Math.Ceiling(ShapeSlackDip * scale));
         if (min == 1) slack = Math.Max(1, (int)Math.Round(ShapeSlackDip * scale * 0.5));
         return new ShapeRect(r.X1 - slack, r.Y1 - slack, r.X2 + slack, r.Y2 + slack, r.Radius + slack);
@@ -2759,6 +2830,8 @@ public sealed partial class IslandWindow : Window
             Win32.MakeIslandStyle(_hwnd, noActivate: !_input.IsActive);
             // MakeIslandStyle 里的 SWP_FRAMECHANGED 可能让窗口形状失效，重新断言一次
             UpdateHitRegion(force: true);
+            // 岛可见期间才挂滚轮钩子（关掉滚轮切换或隐藏时立刻卸掉，别让系统输入一直过我们这层）
+            UpdateWheelWatcher();
         }
         else
         {
@@ -2767,6 +2840,7 @@ public sealed partial class IslandWindow : Window
             _hover = false;
             ClearTouchExpand();
             _input.End();   // 隐藏前先还原样式；_shown 已为 false，Exited 不会再触发收起
+            Win32.UninstallMouseWheelWatcher();
             AppWindow.Hide();
         }
     }
@@ -2980,6 +3054,122 @@ public sealed partial class IslandWindow : Window
         if (inside) return;
 
         DismissTouchExpand();
+    }
+
+    // ---- 滚轮切换（走全局低级鼠标钩子，见 Win32.InstallMouseWheelWatcher） ----
+    //
+    // 岛窗是 WS_EX_NOACTIVATE，从不会拿到键盘焦点；WM_MOUSEWHEEL 默认送给焦点窗口，
+    // XAML 的 PointerWheelChanged 能不能来取决于「悬停时滚动非活动窗口」这条系统设置 —— 不可靠。
+    // 所以滚轮统一从钩子拿，再按「光标是否压在岛体矩形里」自己判定（IsCursorOverIsland）。
+
+    /// <summary>
+    /// 安装/撤掉滚轮监听。装的时候带上处理器（重复调用只替换），岛不可见或者用户关掉开关时
+    /// 立刻卸掉 —— 低级鼠标钩子对系统输入有固定开销，不能在后台常驻。
+    /// </summary>
+    private void UpdateWheelWatcher()
+    {
+        bool wanted = _shown && _settings.Get(WheelSwitchKey, true);
+        if (wanted == _wheelWatcherInstalled) return;
+        _wheelWatcherInstalled = wanted;
+
+        if (wanted)
+        {
+            Win32.InstallMouseWheelWatcher(OnGlobalMouseWheel);
+            _log.Debug("滚轮钩子已安装（岛可见且开关打开）");
+        }
+        else
+        {
+            Win32.UninstallMouseWheelWatcher();
+            _log.Debug($"滚轮钩子已卸载（_shown={_shown}，开关={_settings.Get(WheelSwitchKey, true)}）");
+        }
+    }
+
+    /// <summary>
+    /// 全局滚轮（监听线程）：光标压在岛体上才算数，其余一概放过。
+    /// 这里只把「积了几格」记下来，真正的切换由看门狗的节拍消费（见 <see cref="PumpWheelStep"/>）——
+    /// 高精度滚轮/触摸板一秒能发几十个事件，逐个走内容交接动画会把岛抖成幻灯片。
+    /// </summary>
+    private void OnGlobalMouseWheel(Win32.POINT pt, int delta)
+    {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(() => OnGlobalMouseWheel(pt, delta));
+            return;
+        }
+
+        try
+        {
+            if (delta == 0 || !_shown || _dropping) return;
+            if (!_settings.Get(WheelSwitchKey, true)) return;
+            if (!IsCursorOverIsland()) return;
+
+            // 向下滚 = 下一张（与列表显示顺序一致）；反转开关只翻方向
+            int direction = delta > 0 ? -1 : 1;
+            if (_settings.Get(WheelInvertKey, false)) direction = -direction;
+
+            _wheelPending = Math.Clamp(_wheelPending + direction, -WheelMaxPending, WheelMaxPending);
+            PumpWheelStep();
+        }
+        catch (Exception ex)
+        {
+            // 这里跑在 DispatcherQueue 回调里，异常抛出去就是原生 stowed exception（直接杀进程）
+            _log.Error("滚轮处理失败（已忽略）", ex);
+            _wheelPending = 0;
+        }
+    }
+
+    /// <summary>
+    /// 按节拍消费滚轮积压：两跳之间至少隔 <see cref="WheelStepIntervalMs"/>，其余留给看门狗下一拍。
+    /// 每跳把积压方向减一格（同方向连滚最多攒 <see cref="WheelMaxPending"/> 格）。
+    /// </summary>
+    private void PumpWheelStep()
+    {
+        if (_wheelPending == 0) return;
+        long now = Environment.TickCount64;
+        if (now - _lastWheelStepTicks < WheelStepIntervalMs) return;
+        _lastWheelStepTicks = now;
+
+        int direction = Math.Sign(_wheelPending);
+        _wheelPending -= direction;
+        try
+        {
+            RotateContent(direction);
+        }
+        catch (Exception ex)
+        {
+            // 由看门狗的 DispatcherQueueTimer 调用：异常逃出去同样会以 stowed exception 杀进程
+            _log.Error("滚轮切换失败（已忽略）", ex);
+            _wheelPending = 0;
+        }
+    }
+
+    /// <summary>
+    /// 切到下一张/上一张活动：把锚点挪到目标插件，然后走与「改优先级」完全相同的重建路径
+    /// （重排 + 内容交接 + 尺寸 morph + 队列重建 + 可见性），不另写一套动画。
+    /// 生效后核对主位真的是目标插件 —— 没有活动/被临时消息占着时会落空，这时把锚点作废、
+    /// 交回优先级默认值，免得滚轮下一次从一个看不见的位置继续转。
+    /// </summary>
+    private void RotateContent(int direction)
+    {
+        if (_dropping) return;
+
+        var order = _expanded ? _expandedOrder : _live;
+        int count = order.Count;
+        if (count <= 1) return;
+
+        string current = _expanded ? MainOwner : CompactOwner;
+        int index = order.FindIndex(t => t.Owner == current);
+        if (index < 0) index = 0;
+
+        int next = ((index + direction) % count + count) % count;
+        if (next == index) return;
+
+        _log.Debug($"滚轮切换：{current} → {order[next].Owner}（{(_expanded ? "展开" : "小岛")}，共 {count} 张）");
+        _carouselOwner = order[next].Owner;
+        ApplyPriorityChange();
+
+        string applied = _expanded ? MainOwner : CompactOwner;
+        if (!string.Equals(applied, _carouselOwner, StringComparison.Ordinal)) _carouselOwner = null;
     }
 
     /// <summary>触控指针：没有悬停（按下 Entered、抬起 Exited），所有悬停语义都要绕开它。</summary>

@@ -19,6 +19,8 @@ public sealed partial class GeneralSettingsPage : UserControl
     private const string DisplayKey = "island.display";
     private const string RadiusKey = "island.radius";
     private const string OpacityKey = "island.opacity";
+    private const string WheelSwitchKey = "island.wheelSwitch";
+    private const string WheelInvertKey = "island.wheelInvert";
 
     private static readonly string[] HorizontalValues = { "center", "left", "right" };
 
@@ -54,6 +56,9 @@ public sealed partial class GeneralSettingsPage : UserControl
         HoverDelaySlider.Value = _settings.Get(HoverDelayKey, 0.0);
         HoverDelaySlider.IsEnabled = HoverExpandToggle.IsOn;
         BounceToggle.IsOn = _settings.Get(BounceKey, true);
+        WheelSwitchToggle.IsOn = _settings.Get(WheelSwitchKey, true);
+        WheelInvertToggle.IsOn = _settings.Get(WheelInvertKey, false);
+        WheelInvertToggle.IsEnabled = WheelSwitchToggle.IsOn;
 
         ScaleIslandSlider.Value = _settings.Get("island.scale.island", 100);
         ScaleIdleSlider.Value = _settings.Get("island.scale.idle", 100);
@@ -77,13 +82,15 @@ public sealed partial class GeneralSettingsPage : UserControl
 
     private void BuildChoiceCards()
     {
-        var style = IslandStyle.ParseStyle(_settings.Get(IslandStyle.StyleKey, IslandStyle.AppleValue));
+        var style = IslandStyle.ParseStyle(_settings.Get(IslandStyle.StyleKey, IslandStyle.DefaultStyleValue));
         var material = IslandStyle.ParseMaterial(_settings.Get(IslandStyle.MaterialKey, IslandStyle.AcrylicValue));
         var horizontal = _settings.Get(HorizontalKey, "center");
         bool bottom = IsBottom();
 
         _styleCards = new[]
         {
+            ChoiceCard.Build("style.apple-glass", ChoiceCard.StylePreview(IslandStyleKind.AppleGlass),
+                "Apple 玻璃", "iOS 液态玻璃：半透明 + 镜面高光", () => PickStyle(IslandStyleKind.AppleGlass)),
             ChoiceCard.Build("style.apple", ChoiceCard.StylePreview(IslandStyleKind.Apple),
                 "Apple 灵动岛", "纯黑胶囊，经典灵动岛", () => PickStyle(IslandStyleKind.Apple)),
             ChoiceCard.Build("style.fluent", ChoiceCard.StylePreview(IslandStyleKind.Fluent),
@@ -402,6 +409,19 @@ public sealed partial class GeneralSettingsPage : UserControl
     {
         if (_loading) return;
         _settings.Set(BounceKey, BounceToggle.IsOn);
+    }
+
+    private void WheelSwitchToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _settings.Set(WheelSwitchKey, WheelSwitchToggle.IsOn);
+        WheelInvertToggle.IsEnabled = WheelSwitchToggle.IsOn;
+    }
+
+    private void WheelInvertToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _settings.Set(WheelInvertKey, WheelInvertToggle.IsOn);
     }
 
     private void OffsetSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)

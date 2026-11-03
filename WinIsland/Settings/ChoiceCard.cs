@@ -296,11 +296,11 @@ internal sealed class ChoiceCard
         return frame;
     }
 
-    /// <summary>外观风格预览：Apple 黑胶囊 / Fluent 小圆角 + 描边，画刷直接取自 <see cref="IslandStyle"/>。</summary>
+    /// <summary>外观风格预览：Apple 哑光黑胶囊 / Apple 玻璃 / Fluent 小圆角 + 描边，画刷直接取自 <see cref="IslandStyle"/>。</summary>
     public static FrameworkElement StylePreview(IslandStyleKind style)
         => PreviewFrame(
             style,
-            materialApplied: style == IslandStyleKind.Fluent,
+            materialApplied: IslandStyle.UsesBackdrop(style),
             FlatWallpaper(),
             SystemTheme.IsLight);
 

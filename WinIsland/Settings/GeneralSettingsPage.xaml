@@ -199,6 +199,56 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="滚轮切换" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="光标停在岛上滚动鼠标滚轮，就在各个活动之间轮换（小岛与展开主卡一起切）；向下滚 = 下一张"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+                <ToggleSwitch
+                    x:Name="WheelSwitchToggle"
+                    Grid.Column="1"
+                    MinWidth="0"
+                    VerticalAlignment="Center"
+                    OffContent=""
+                    OnContent=""
+                    Toggled="WheelSwitchToggle_Toggled" />
+            </Grid>
+        </Border>
+
+        <Border Style="{StaticResource SettingsCardStyle}">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="滚轮方向反转" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="默认向下滚是下一张；开启后向下滚变成上一张"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+                <ToggleSwitch
+                    x:Name="WheelInvertToggle"
+                    Grid.Column="1"
+                    MinWidth="0"
+                    VerticalAlignment="Center"
+                    OffContent=""
+                    OnContent=""
+                    Toggled="WheelInvertToggle_Toggled" />
+            </Grid>
+        </Border>
+
+        <Border Style="{StaticResource SettingsCardStyle}">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2" VerticalAlignment="Center">
                     <TextBlock Text="展开回弹" />
                     <TextBlock
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"

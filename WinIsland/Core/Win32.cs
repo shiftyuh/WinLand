@@ -732,19 +732,25 @@ internal static partial class Win32
         }
     }
 
-    // ---- 全局按下监听：触控展开后「点岛外收起」的唯一信号源 ----
+    // ---- 全局输入监听：触控展开后的「点岛外收起」与岛上的滚轮切换 ----
     //
     // 岛窗是 WS_EX_NOACTIVATE，又被窗口形状裁成岛体本身：岛外的一切点击/触摸都到不了这里。
     // 而触摸没有悬停语义（手指抬起就是 PointerExited），展开后只能由「别处的下一次按下」来收。
+    // 滚轮也同理：WM_MOUSEWHEEL 本来送的是**焦点窗口**，岛窗从不拿焦点，XAML 的
+    // PointerWheelChanged 能不能收到取决于「悬停滚动非活动窗口」这条系统设置 —— 靠不住，
+    // 所以统一走低级鼠标钩子拿滚轮，只在光标压在岛体矩形里时才派发（判定在 IslandWindow）。
+    //
     // 低级鼠标钩子在安装它的线程上回调，所以要单独一个消息泵线程 —— 钩子回调要求线程处于
     // 消息等待状态，而 UI 线程被插件卡住时不该连带拖住系统级输入。触摸在系统层会被提升成
-    // 鼠标按下，钩子同样收得到。只在触控展开期间安装，其余时间系统输入零开销。
+    // 鼠标按下，钩子同样收得到。两个处理器分别安装：按下钩子只在触控展开期间存在，
+    // 滚轮钩子只在岛体可见且用户开启滚轮切换时存在，其余时间系统输入零开销。
 
     private const int WH_MOUSE_LL = 14;
     private const int WM_LBUTTONDOWN = 0x0201;
     private const int WM_RBUTTONDOWN = 0x0204;
     private const int WM_MBUTTONDOWN = 0x0207;
     private const int WM_XBUTTONDOWN = 0x020B;
+    private const int WM_MOUSEWHEEL = 0x020A;
     private const uint PM_NOREMOVE = 0x0000;
     private const uint PM_REMOVE = 0x0001;
     private const uint QS_ALLINPUT = 0x04FF;
@@ -785,6 +791,8 @@ internal static partial class Win32
     private static readonly LowLevelMouseProc _lowLevelMouseProc = OnLowLevelMouse;
     private static readonly object _mouseWatcherGate = new();
     private static Action<POINT>? _mouseDownHandler;
+    /// <summary>滚轮处理器：参数是光标屏幕坐标与滚轮增量（一格 = ±120，正数向上）。</summary>
+    private static Action<POINT, int>? _mouseWheelHandler;
     private static Thread? _mouseWatchThread;
 
     /// <summary>
@@ -801,12 +809,36 @@ internal static partial class Win32
         }
     }
 
-    /// <summary>停止派发全局按下：监听线程下一轮自行退出并卸掉钩子。</summary>
+    /// <summary>停止派发全局按下：监听线程下一轮自行退出（若滚轮钩子还装着就不退）并卸掉钩子。</summary>
     public static void UninstallMouseDownWatcher()
     {
         lock (_mouseWatcherGate)
         {
             _mouseDownHandler = null;
+        }
+    }
+
+    /// <summary>
+    /// 开始派发全局滚轮。<paramref name="onMouseWheel"/> 在监听线程上被调用（只记录/切线程，别碰 UI），
+    /// 第二个参数是一格滚轮的增量（±120 的整数倍，正数 = 向上滚）。重复调用只替换处理器。
+    /// 装一次钩子对系统输入有固定开销，所以只在岛体可见并且用户开着滚轮切换时安装。
+    /// </summary>
+    public static void InstallMouseWheelWatcher(Action<POINT, int> onMouseWheel)
+    {
+        lock (_mouseWatcherGate)
+        {
+            _mouseWheelHandler = onMouseWheel;
+            if (_mouseWatchThread != null) return;
+            StartMouseWatchThread();
+        }
+    }
+
+    /// <summary>停止派发全局滚轮。</summary>
+    public static void UninstallMouseWheelWatcher()
+    {
+        lock (_mouseWatcherGate)
+        {
+            _mouseWheelHandler = null;
         }
     }
 
@@ -844,22 +876,40 @@ internal static partial class Win32
         {
             // 退出窗口期内又重新需要监听：补一个线程，否则这次安装会静默失效
             _mouseWatchThread = null;
-            if (_mouseDownHandler != null) StartMouseWatchThread();
+            if (_mouseDownHandler != null || _mouseWheelHandler != null) StartMouseWatchThread();
         }
     }
 
     private static bool IsMouseWatchWanted()
     {
-        lock (_mouseWatcherGate) return _mouseDownHandler != null;
+        lock (_mouseWatcherGate) return _mouseDownHandler != null || _mouseWheelHandler != null;
     }
 
     private static nint OnLowLevelMouse(int nCode, nint wParam, nint lParam)
     {
         // 回调在监听线程上：只取坐标后立刻返回（系统对钩子回调耗时有超时限制）
-        if (nCode >= 0 && _mouseDownHandler is { } handler)
+        if (nCode >= 0)
         {
             int msg = (int)wParam;
-            if (msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN or WM_MBUTTONDOWN or WM_XBUTTONDOWN)
+            if (msg == WM_MOUSEWHEEL)
+            {
+                if (_mouseWheelHandler is { } wheelHandler)
+                {
+                    try
+                    {
+                        var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+                        // mouseData 的高 16 位是有符号滚轮增量（一格 = ±120）
+                        int delta = (short)((data.mouseData >> 16) & 0xFFFF);
+                        wheelHandler(data.pt, delta);
+                    }
+                    catch
+                    {
+                        // 钩子回调里绝不能把异常抛出去
+                    }
+                }
+            }
+            else if (msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN or WM_MBUTTONDOWN or WM_XBUTTONDOWN
+                     && _mouseDownHandler is { } handler)
             {
                 try
                 {

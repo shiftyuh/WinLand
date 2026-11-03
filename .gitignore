@@ -18,3 +18,9 @@ probe*.txt
 website/node_modules/
 website/dist/
 website/.shots/
+
+# 本 fork 新增
+plugins-src/**/bin/
+plugins-src/**/obj/
+plugins-src/dist/
+.dotnet-temp-profile/

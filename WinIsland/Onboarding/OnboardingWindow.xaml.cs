@@ -316,7 +316,7 @@ public sealed partial class OnboardingWindow : Window
 
     private void BuildChoiceCards()
     {
-        var style = IslandStyle.ParseStyle(_settings.Get(IslandStyle.StyleKey, IslandStyle.AppleValue));
+        var style = IslandStyle.ParseStyle(_settings.Get(IslandStyle.StyleKey, IslandStyle.DefaultStyleValue));
         var material = IslandStyle.ParseMaterial(_settings.Get(IslandStyle.MaterialKey, IslandStyle.AcrylicValue));
         var horizontal = _settings.Get(HorizontalKey, "center");
         bool bottom = IsBottom();
@@ -335,6 +335,8 @@ public sealed partial class OnboardingWindow : Window
 
         _styleCards = new[]
         {
+            ChoiceCard.Build("style.apple-glass", ChoiceCard.StylePreview(IslandStyleKind.AppleGlass),
+                "Apple 玻璃", "iOS 液态玻璃：半透明 + 镜面高光", () => PickStyle(IslandStyleKind.AppleGlass)),
             ChoiceCard.Build("style.apple", ChoiceCard.StylePreview(IslandStyleKind.Apple),
                 "Apple 灵动岛", "纯黑胶囊，经典灵动岛", () => PickStyle(IslandStyleKind.Apple)),
             ChoiceCard.Build("style.fluent", ChoiceCard.StylePreview(IslandStyleKind.Fluent),

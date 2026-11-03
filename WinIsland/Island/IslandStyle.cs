@@ -11,6 +11,12 @@ public enum IslandStyleKind
     /// <summary>Apple 灵动岛：不透明纯黑胶囊。明暗主题下都是黑的 —— 这是它的身份。</summary>
     Apple,
 
+    /// <summary>
+    /// Apple 玻璃：iOS 那种通透的"液态玻璃"胶囊 —— 半透明底衬 + 窗口级模糊，
+    /// 左上到右下一条镜面高光，外加一圈渐变镜面描边。跟随系统明暗。
+    /// </summary>
+    AppleGlass,
+
     /// <summary>Windows Fluent：元素级系统材质 + 小圆角 + 1px 描边，配色跟随系统明暗主题。</summary>
     Fluent,
 }
@@ -40,12 +46,16 @@ public static class IslandStyle
     public const string MaterialKey = "island.material";
 
     public const string AppleValue = "apple";
+    public const string AppleGlassValue = "apple-glass";
     public const string FluentValue = "fluent";
     public const string AcrylicValue = "acrylic";
     public const string MicaValue = "mica";
 
+    /// <summary>新安装默认用玻璃外观（旧安装若已显式存过 island.style 则保持原样）。</summary>
+    public const string DefaultStyleValue = AppleGlassValue;
+
     /// <summary>设置页下拉的选项顺序，索引即 SelectedIndex。</summary>
-    public static readonly IslandStyleKind[] Styles = { IslandStyleKind.Apple, IslandStyleKind.Fluent };
+    public static readonly IslandStyleKind[] Styles = { IslandStyleKind.AppleGlass, IslandStyleKind.Apple, IslandStyleKind.Fluent };
 
     /// <summary>设置页材质下拉的选项顺序，索引即 SelectedIndex。</summary>
     public static readonly IslandMaterialKind[] Materials = { IslandMaterialKind.Acrylic, IslandMaterialKind.Mica };
@@ -84,17 +94,25 @@ public static class IslandStyle
     private static readonly Color SpotlightStrokeLight = Color.FromArgb(26, 0, 0, 0);
 
     public static IslandStyleKind ParseStyle(string? value)
-        => string.Equals(value?.Trim(), FluentValue, StringComparison.OrdinalIgnoreCase)
-            ? IslandStyleKind.Fluent
-            : IslandStyleKind.Apple;
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            FluentValue => IslandStyleKind.Fluent,
+            AppleValue => IslandStyleKind.Apple,
+            AppleGlassValue => IslandStyleKind.AppleGlass,
+            _ => IslandStyleKind.AppleGlass,   // 没存过 / 认不出来的值都按新默认（玻璃）
+        };
 
     public static IslandMaterialKind ParseMaterial(string? value)
         => string.Equals(value?.Trim(), MicaValue, StringComparison.OrdinalIgnoreCase)
             ? IslandMaterialKind.Mica
             : IslandMaterialKind.Acrylic;
 
-    public static string ToValue(this IslandStyleKind style)
-        => style == IslandStyleKind.Fluent ? FluentValue : AppleValue;
+    public static string ToValue(this IslandStyleKind style) => style switch
+    {
+        IslandStyleKind.Fluent => FluentValue,
+        IslandStyleKind.Apple => AppleValue,
+        _ => AppleGlassValue,
+    };
 
     public static string ToValue(this IslandMaterialKind material)
         => material == IslandMaterialKind.Mica ? MicaValue : AcrylicValue;
@@ -106,15 +124,19 @@ public static class IslandStyle
     private static Color Pick(bool light, Color dark, Color lightColor) => light ? lightColor : dark;
 
     /// <summary>
-    /// 该用浅色配色吗：只有 Fluent 跟随系统主题，Apple 的黑胶囊在浅色系统下也是黑的。
+    /// 该用浅色配色吗：Apple 哑光黑胶囊在浅色系统下也是黑的；玻璃与 Fluent 跟随系统主题
+    /// （玻璃的浅色是"奶白玻璃"，文字必须切成深色，否则白字压白底）。
     /// 岛体、聚光卡、设置页预览都读这一个判断，别在别处再写一遍。
     /// </summary>
     public static bool IsLightChrome(IslandStyleKind style, bool light)
-        => style == IslandStyleKind.Fluent && light;
+        => style != IslandStyleKind.Apple && light;
+
+    /// <summary>是不是需要系统模糊材质的风格（玻璃与 Fluent 都要，哑光 Apple 不要）。</summary>
+    public static bool UsesBackdrop(IslandStyleKind style) => style != IslandStyleKind.Apple;
 
     /// <summary>当前生效的岛体明暗（设置里的外观风格 + 系统主题）：岛体与插件侧都从这里取。</summary>
     public static bool ResolveIsLight(ISettingsStore settings)
-        => IsLightChrome(ParseStyle(settings.Get(StyleKey, AppleValue)), SystemTheme.IsLight);
+        => IsLightChrome(ParseStyle(settings.Get(StyleKey, DefaultStyleValue)), SystemTheme.IsLight);
 
     /// <summary>
     /// 岛体圆角：<paramref name="height"/> 为岛体高度，<paramref name="expanded"/> 表示展开大岛。
@@ -142,24 +164,76 @@ public static class IslandStyle
     /// 再叠白纱就成了平白板，那是"看不出材质"而不是"适配了浅色"。
     /// 材质不可用时退回接近不透明的纯色（深色 #202020 / 浅色 #F3F3F3），文字依旧可读。
     /// </summary>
-    public static SolidColorBrush CreateSurfaceFill(IslandStyleKind style, bool materialApplied, bool light)
+    public static Brush CreateSurfaceFill(IslandStyleKind style, bool materialApplied, bool light)
     {
+        if (style == IslandStyleKind.AppleGlass) return CreateGlassFill(materialApplied, light);
         if (style == IslandStyleKind.Apple) return new SolidColorBrush(AppleSurface);
         if (materialApplied) return new SolidColorBrush(Pick(light, FluentSurfaceDark, FluentSurfaceLight));
         return new SolidColorBrush(Pick(light, FluentSolidSurfaceDark, FluentSolidSurfaceLight));
     }
 
-    /// <summary>岛体描边：仅 Fluent 使用 1px 细描边（深色主题浅描边、浅色主题深描边）。</summary>
-    public static SolidColorBrush? CreateStroke(IslandStyleKind style, bool light)
-        => style == IslandStyleKind.Fluent
+    /// <summary>
+    /// 玻璃底衬：一条「左上白高光 → 中段底色 → 右下略深」的渐变。
+    /// 高光直接画在 Border 的 Background 上 —— 背景会被圆角裁掉，所以胶囊边角不会露出方块高光，
+    /// 也不需要额外的 Clip。材质可用时底色更透（模糊透出来），不可用时把 alpha 拉高保证文字对比度。
+    /// </summary>
+    private static LinearGradientBrush CreateGlassFill(bool materialApplied, bool light)
+    {
+        var brush = new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0),
+            EndPoint = new Point(0.78, 1),
+        };
+
+        Color baseColor, sheen, deep;
+        if (light)
+        {
+            baseColor = materialApplied ? Color.FromArgb(122, 250, 250, 253) : Color.FromArgb(232, 246, 246, 250);
+            sheen = Color.FromArgb(206, 255, 255, 255);
+            deep = Color.FromArgb((byte)Math.Min(255, baseColor.A + 14), 236, 236, 242);
+        }
+        else
+        {
+            baseColor = materialApplied ? Color.FromArgb(150, 20, 20, 26) : Color.FromArgb(234, 24, 24, 30);
+            sheen = Color.FromArgb(58, 255, 255, 255);
+            deep = Color.FromArgb((byte)Math.Min(255, baseColor.A + 16), 10, 10, 15);
+        }
+
+        brush.GradientStops.Add(new GradientStop { Color = sheen, Offset = 0 });
+        brush.GradientStops.Add(new GradientStop { Color = Color.FromArgb((byte)(sheen.A * 0.28), sheen.R, sheen.G, sheen.B), Offset = 0.22 });
+        brush.GradientStops.Add(new GradientStop { Color = baseColor, Offset = 0.5 });
+        brush.GradientStops.Add(new GradientStop { Color = deep, Offset = 1 });
+        return brush;
+    }
+
+    /// <summary>
+    /// 岛体描边：Fluent 是 1px 半透明细描边；玻璃是「镜面边框」—— 左上强、对角渐隐、右下再起一点，
+    /// 模拟 iOS 玻璃边缘的折射光；哑光 Apple 不要描边。
+    /// </summary>
+    public static Brush? CreateStroke(IslandStyleKind style, bool light)
+    {
+        if (style == IslandStyleKind.AppleGlass) return CreateGlassStroke();
+
+        return style == IslandStyleKind.Fluent
             ? new SolidColorBrush(Pick(light, FluentStrokeDark, FluentStrokeLight))
             : null;
+    }
 
-    /// <summary>空闲小点颜色：纯黑胶囊上用深灰（现状），系统材质上用半透明的白（深色）/ 黑（浅色）。</summary>
+    private static LinearGradientBrush CreateGlassStroke()
+    {
+        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+        brush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(132, 255, 255, 255), Offset = 0 });
+        brush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(54, 255, 255, 255), Offset = 0.34 });
+        brush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(14, 255, 255, 255), Offset = 0.66 });
+        brush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(74, 255, 255, 255), Offset = 1 });
+        return brush;
+    }
+
+    /// <summary>空闲小点颜色：纯黑胶囊上用深灰，玻璃/Fluent 上用半透明的白（深色）或黑（浅色）。</summary>
     public static Color IdleDotColor(IslandStyleKind style, bool light)
-        => style == IslandStyleKind.Fluent
-            ? Pick(light, FluentIdleDotDark, FluentIdleDotLight)
-            : AppleIdleDot;
+        => style == IslandStyleKind.Apple
+            ? AppleIdleDot
+            : Pick(light, FluentIdleDotDark, FluentIdleDotLight);
 
     /// <summary>聚光卡圆角（连用户圆角比例）。</summary>
     public static double ResolveSpotlightRadius(IslandStyleKind style, double scale = 1.0)
@@ -171,17 +245,55 @@ public static class IslandStyle
     /// 覆盖窗是独立的全屏透明窗，这里刻意不用元素级 Acrylic —— 那需要窗口自己的材质背衬，
     /// 在「透明窗 + 遮罩」的组合里会退化成不可控的色块。
     /// </summary>
-    public static SolidColorBrush CreateSpotlightFill(IslandStyleKind style, bool materialApplied, bool light, double opacity = 1.0)
+    public static Brush CreateSpotlightFill(IslandStyleKind style, bool materialApplied, bool light, double opacity = 1.0)
     {
+        if (style == IslandStyleKind.AppleGlass)
+        {
+            var glass = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0.8, 1) };
+            if (light)
+            {
+                glass.GradientStops.Add(new GradientStop { Color = ScaleAlpha(Color.FromArgb(96, 255, 255, 255), opacity), Offset = 0 });
+                glass.GradientStops.Add(new GradientStop { Color = ScaleAlpha(Color.FromArgb(238, 250, 250, 252), opacity), Offset = 0.42 });
+                glass.GradientStops.Add(new GradientStop { Color = ScaleAlpha(Color.FromArgb(240, 240, 240, 246), opacity), Offset = 1 });
+            }
+            else
+            {
+                glass.GradientStops.Add(new GradientStop { Color = ScaleAlpha(Color.FromArgb(56, 255, 255, 255), opacity), Offset = 0 });
+                glass.GradientStops.Add(new GradientStop { Color = ScaleAlpha(Color.FromArgb(226, 20, 20, 26), opacity), Offset = 0.42 });
+                glass.GradientStops.Add(new GradientStop { Color = ScaleAlpha(Color.FromArgb(234, 12, 12, 17), opacity), Offset = 1 });
+            }
+
+            return glass;
+        }
+
         if (style == IslandStyleKind.Apple) return new SolidColorBrush(ScaleAlpha(AppleSpotlightSurface, opacity));
         return new SolidColorBrush(ScaleAlpha(materialApplied
             ? Pick(light, FluentSpotlightSurfaceDark, FluentSpotlightSurfaceLight)
             : Pick(light, FluentSpotlightSolidSurfaceDark, FluentSpotlightSolidSurfaceLight), opacity));
     }
 
-    /// <summary>聚光卡描边：两种风格都用 1px 细描边，把卡片从暗化遮罩里"抠"出来。</summary>
-    public static SolidColorBrush CreateSpotlightStroke(IslandStyleKind style, bool light, double opacity = 1.0)
-        => new(ScaleAlpha(Pick(light, SpotlightStrokeDark, SpotlightStrokeLight), opacity));
+    /// <summary>聚光卡描边：两种风格都用 1px 细描边，把卡片从暗化遮罩里"抠"出来；玻璃用镜面渐变边。</summary>
+    public static Brush CreateSpotlightStroke(IslandStyleKind style, bool light, double opacity = 1.0)
+    {
+        if (style == IslandStyleKind.AppleGlass)
+        {
+            var brush = CreateGlassStroke();
+            // 聚光卡整体压在暗化遮罩上，镜面边再提一档才看得见
+            var boosted = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+            foreach (var stop in brush.GradientStops)
+            {
+                boosted.GradientStops.Add(new GradientStop
+                {
+                    Offset = stop.Offset,
+                    Color = ScaleAlpha(stop.Color, Math.Min(1.0, opacity * 1.3)),
+                });
+            }
+
+            return boosted;
+        }
+
+        return new SolidColorBrush(ScaleAlpha(Pick(light, SpotlightStrokeDark, SpotlightStrokeLight), opacity));
+    }
 
     /// <summary>把一个颜色的 alpha 乘以比例（用户不透明度设置；1.0 = 不变）。</summary>
     private static Color ScaleAlpha(Color color, double opacity)
@@ -191,16 +303,19 @@ public static class IslandStyle
 
     private static readonly Color TopHighlightDark = Color.FromArgb(28, 255, 255, 255);
     private static readonly Color TopHighlightLight = Color.FromArgb(72, 255, 255, 255);
+    private static readonly Color GlassHighlightDark = Color.FromArgb(104, 255, 255, 255);
+    private static readonly Color GlassHighlightLight = Color.FromArgb(168, 255, 255, 255);
 
     /// <summary>
-    /// Fluent 岛体/卡片上缘的 1px 渐变高光（两端渐隐，圆角处自然收掉，不需要额外裁剪）。
-    /// Apple 不加：它的身份是哑光纯黑胶囊，一道反光会把它读成"玻璃片"。
+    /// 岛体/卡片上缘的 1px 渐变高光（两端渐隐，圆角处自然收掉，不需要额外裁剪）。
+    /// Fluent 用一档弱反光；玻璃用更亮的一档（那是"玻璃上沿"）；哑光 Apple 不加 —— 它的身份是哑光纯黑。
     /// </summary>
     public static LinearGradientBrush? CreateTopHighlight(IslandStyleKind style, bool light)
     {
-        if (style != IslandStyleKind.Fluent) return null;
-
-        var color = Pick(light, TopHighlightDark, TopHighlightLight);
+        Color color;
+        if (style == IslandStyleKind.AppleGlass) color = Pick(light, GlassHighlightDark, GlassHighlightLight);
+        else if (style == IslandStyleKind.Fluent) color = Pick(light, TopHighlightDark, TopHighlightLight);
+        else return null;
         var fade = Color.FromArgb((byte)(color.A * 0.45), color.R, color.G, color.B);
         var clear = Color.FromArgb(0, color.R, color.G, color.B);
 
@@ -248,14 +363,14 @@ public static class IslandStyle
     public static SolidColorBrush CreateMessageChipFill(IslandStyleKind style, Color? accent, bool light)
     {
         if (accent is { } color) return new SolidColorBrush(color);
-        return new SolidColorBrush(style == IslandStyleKind.Fluent
+        return new SolidColorBrush(style != IslandStyleKind.Apple
             ? Pick(light, FluentMessageChipFillDark, FluentMessageChipFillLight)
             : AppleMessageChipFill);
     }
 
-    /// <summary>消息图标芯片描边：仅 Fluent，和岛体描边、投放卡片描边同一档。</summary>
+    /// <summary>消息图标芯片描边：Fluent / 玻璃，和岛体描边同一档。</summary>
     public static SolidColorBrush? CreateMessageChipStroke(IslandStyleKind style, bool light)
-        => style == IslandStyleKind.Fluent
+        => style != IslandStyleKind.Apple
             ? new SolidColorBrush(Pick(light, MessageChipStrokeDark, MessageChipStrokeLight))
             : null;
 
@@ -296,9 +411,9 @@ public static class IslandStyle
             ? AppleDropTileFill
             : Pick(light, FluentDropTileFillDark, FluentDropTileFillLight));
 
-    /// <summary>投放卡片描边：仅 Fluent 使用，和岛体描边同一档。</summary>
+    /// <summary>投放卡片描边：Fluent / 玻璃使用，和岛体描边同一档。</summary>
     public static SolidColorBrush? CreateDropTileStroke(IslandStyleKind style, bool light)
-        => style == IslandStyleKind.Fluent
+        => style != IslandStyleKind.Apple
             ? new SolidColorBrush(Pick(light, DropTileStrokeDark, DropTileStrokeLight))
             : null;
 
